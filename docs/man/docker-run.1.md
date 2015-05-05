@@ -13,7 +13,9 @@ docker-run - Run a command in a new container
 [**--cap-drop**[=*[]*]]
 [**--cidfile**[=*CIDFILE*]]
 [**--cpuset-cpus**[=*CPUSET-CPUS*]]
+[**--cpuset-mems**[=*CPUSET-MEMS*]]
 [**-d**|**--detach**[=*false*]]
+[**--cpu-quota**[=*0*]]
 [**--device**[=*[]*]]
 [**--dns-search**[=*[]*]]
 [**--dns**[=*[]*]]
@@ -35,6 +37,7 @@ docker-run - Run a command in a new container
 [**--mac-address**[=*MAC-ADDRESS*]]
 [**--name**[=*NAME*]]
 [**--net**[=*"bridge"*]]
+[**--oom-kill-disable**[=*false*]]
 [**-P**|**--publish-all**[=*false*]]
 [**-p**|**--publish**[=*[]*]]
 [**--pid**[=*[]*]]
@@ -101,7 +104,7 @@ the number of containers running on the system.
 For example, consider three containers, one has a cpu-share of 1024 and
 two others have a cpu-share setting of 512. When processes in all three
 containers attempt to use 100% of CPU, the first container would receive
-50% of the total CPU time. If you add a fouth container with a cpu-share
+50% of the total CPU time. If you add a fourth container with a cpu-share
 of 1024, the first container only gets 33% of the CPU. The remaining containers
 receive 16.5%, 16.5% and 33% of the CPU.
 
@@ -133,6 +136,20 @@ division of CPU shares:
 
 **--cpuset-cpus**=""
    CPUs in which to allow execution (0-3, 0,1)
+
+**--cpuset-mems**=""
+   Memory nodes (MEMs) in which to allow execution (0-3, 0,1). Only effective on NUMA systems.
+
+   If you have four memory nodes on your system (0-3), use `--cpuset-mems=0,1`
+then processes in your Docker container will only use memory from the first
+two memory nodes.
+
+**--cpu-quota**=0
+   Limit the CPU CFS (Completely Fair Scheduler) quota
+
+   Limit the container's CPU usage. By default, containers run with the full
+CPU resource. This flag tell the kernel to restrict the container's CPU usage
+to the quota you specify.
 
 **-d**, **--detach**=*true*|*false*
    Detached mode: run the container in the background and print the new container ID. The default is *false*.
@@ -222,7 +239,7 @@ which interface and port to use.
 **--lxc-conf**=[]
    (lxc exec-driver only) Add custom lxc options --lxc-conf="lxc.cgroup.cpuset.cpus = 0,1"
 
-**--log-driver**="|*json-file*|*none*"
+**--log-driver**="|*json-file*|*syslog*|*journald*|*none*"
   Logging driver for container. Default is defined by daemon `--log-driver` flag.
   **Warning**: `docker logs` command works only for `json-file` logging driver.
 
@@ -239,7 +256,7 @@ system's page size (the value would be very large, that's millions of trillions)
    Total memory limit (memory + swap)
 
    Set `-1` to disable swap (format: <number><optional unit>, where unit = b, k, m or g).
-This value should always larger than **-m**, so you should alway use this with **-m**.
+This value should always larger than **-m**, so you should always use this with **-m**.
 
 **--mac-address**=""
    Container MAC address (e.g. 92:d0:c6:0a:29:33)
@@ -268,6 +285,9 @@ and foreground Docker containers.
                                'none': no networking for this container
                                'container:<name|id>': reuses another container network stack
                                'host': use the host network stack inside the container.  Note: the host mode gives the container full access to local system services such as D-bus and is therefore considered insecure.
+
+**--oom-kill-disable**=*true*|*false*
+   Whether to disable OOM Killer for the container or not.
 
 **-P**, **--publish-all**=*true*|*false*
    Publish all exposed ports to random ports on the host interfaces. The default is *false*.
@@ -341,7 +361,12 @@ The **-t** option is incompatible with a redirection of the docker client
 standard input.
 
 **-u**, **--user**=""
-   Username or UID
+   Sets the username or UID used and optionally the groupname or GID for the specified command.
+
+   The followings examples are all valid:
+   --user [user | user:group | uid | uid:gid | user:gid | uid:group ]
+
+   Without this argument the command will be run as root in the container.
 
 **-v**, **--volume**=[]
    Bind mount a volume (e.g., from the host: -v /host:/container, from Docker: -v /container)
@@ -411,7 +436,7 @@ you’d like to connect instead, as in:
 
 ## Sharing IPC between containers
 
-Using shm_server.c available here: http://www.cs.cf.ac.uk/Dave/C/node27.html
+Using shm_server.c available here: https://www.cs.cf.ac.uk/Dave/C/node27.html
 
 Testing `--ipc=host` mode:
 
@@ -428,7 +453,7 @@ Host shows a shared memory segment with 7 pids attached, happens to be from http
 Now run a regular container, and it correctly does NOT see the shared memory segment from the host:
 
 ```
- $ sudo docker run -it shm ipcs -m
+ $ docker run -it shm ipcs -m
 
  ------ Shared Memory Segments --------	
  key        shmid      owner      perms      bytes      nattch     status      
@@ -437,7 +462,7 @@ Now run a regular container, and it correctly does NOT see the shared memory seg
 Run a container with the new `--ipc=host` option, and it now sees the shared memory segment from the host httpd:
 
  ```
- $ sudo docker run -it --ipc=host shm ipcs -m
+ $ docker run -it --ipc=host shm ipcs -m
 
  ------ Shared Memory Segments --------
  key        shmid      owner      perms      bytes      nattch     status      
@@ -447,7 +472,7 @@ Testing `--ipc=container:CONTAINERID` mode:
 
 Start a container with a program to create a shared memory segment:
 ```
- sudo docker run -it shm bash
+ $ docker run -it shm bash
  $ sudo shm/shm_server &
  $ sudo ipcs -m
 
@@ -457,7 +482,7 @@ Start a container with a program to create a shared memory segment:
 ```
 Create a 2nd container correctly shows no shared memory segment from 1st container:
 ```
- $ sudo docker run shm ipcs -m
+ $ docker run shm ipcs -m
 
  ------ Shared Memory Segments --------
  key        shmid      owner      perms      bytes      nattch     status      
@@ -466,7 +491,7 @@ Create a 2nd container correctly shows no shared memory segment from 1st contain
 Create a 3rd container using the new --ipc=container:CONTAINERID option, now it shows the shared memory segment from the first:
 
 ```
- $ sudo docker run -it --ipc=container:ed735b2264ac shm ipcs -m
+ $ docker run -it --ipc=container:ed735b2264ac shm ipcs -m
  $ sudo ipcs -m
 
  ------ Shared Memory Segments --------

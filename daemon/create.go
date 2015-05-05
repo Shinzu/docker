@@ -2,9 +2,8 @@ package daemon
 
 import (
 	"fmt"
-	"strings"
+	"path/filepath"
 
-	"github.com/docker/docker/engine"
 	"github.com/docker/docker/graph"
 	"github.com/docker/docker/image"
 	"github.com/docker/docker/pkg/parsers"
@@ -12,61 +11,40 @@ import (
 	"github.com/docker/libcontainer/label"
 )
 
-func (daemon *Daemon) ContainerCreate(job *engine.Job) engine.Status {
-	var name string
-	if len(job.Args) == 1 {
-		name = job.Args[0]
-	} else if len(job.Args) > 1 {
-		return job.Errorf("Usage: %s", job.Name)
+func (daemon *Daemon) ContainerCreate(name string, config *runconfig.Config, hostConfig *runconfig.HostConfig) (string, []string, error) {
+	warnings, err := daemon.verifyHostConfig(hostConfig)
+	if err != nil {
+		return "", warnings, err
 	}
 
-	config := runconfig.ContainerConfigFromJob(job)
-	hostConfig := runconfig.ContainerHostConfigFromJob(job)
+	// The check for a valid workdir path is made on the server rather than in the
+	// client. This is because we don't know the type of path (Linux or Windows)
+	// to validate on the client.
+	if config.WorkingDir != "" && !filepath.IsAbs(config.WorkingDir) {
+		return "", warnings, fmt.Errorf("The working directory '%s' is invalid. It needs to be an absolute path.", config.WorkingDir)
+	}
 
-	if len(hostConfig.LxcConf) > 0 && !strings.Contains(daemon.ExecutionDriver().Name(), "lxc") {
-		return job.Errorf("Cannot use --lxc-conf with execdriver: %s", daemon.ExecutionDriver().Name())
-	}
-	if hostConfig.Memory != 0 && hostConfig.Memory < 4194304 {
-		return job.Errorf("Minimum memory limit allowed is 4MB")
-	}
-	if hostConfig.Memory > 0 && !daemon.SystemConfig().MemoryLimit {
-		job.Errorf("Your kernel does not support memory limit capabilities. Limitation discarded.\n")
-		hostConfig.Memory = 0
-	}
-	if hostConfig.Memory > 0 && !daemon.SystemConfig().SwapLimit {
-		job.Errorf("Your kernel does not support swap limit capabilities. Limitation discarded.\n")
-		hostConfig.MemorySwap = -1
-	}
-	if hostConfig.Memory > 0 && hostConfig.MemorySwap > 0 && hostConfig.MemorySwap < hostConfig.Memory {
-		return job.Errorf("Minimum memoryswap limit should be larger than memory limit, see usage.\n")
-	}
-	if hostConfig.Memory == 0 && hostConfig.MemorySwap > 0 {
-		return job.Errorf("You should always set the Memory limit when using Memoryswap limit, see usage.\n")
+	if !daemon.SystemConfig().OomKillDisable {
+		hostConfig.OomKillDisable = false
+		return "", warnings, fmt.Errorf("Your kernel does not support oom kill disable.")
 	}
 
 	container, buildWarnings, err := daemon.Create(config, hostConfig, name)
 	if err != nil {
-		if daemon.Graph().IsNotExist(err) {
+		if daemon.Graph().IsNotExist(err, config.Image) {
 			_, tag := parsers.ParseRepositoryTag(config.Image)
 			if tag == "" {
 				tag = graph.DEFAULTTAG
 			}
-			return job.Errorf("No such image: %s (tag: %s)", config.Image, tag)
+			return "", warnings, fmt.Errorf("No such image: %s (tag: %s)", config.Image, tag)
 		}
-		return job.Error(err)
+		return "", warnings, err
 	}
-	if !container.Config.NetworkDisabled && daemon.SystemConfig().IPv4ForwardingDisabled {
-		job.Errorf("IPv4 forwarding is disabled.\n")
-	}
+
 	container.LogEvent("create")
+	warnings = append(warnings, buildWarnings...)
 
-	job.Printf("%s\n", container.ID)
-
-	for _, warning := range buildWarnings {
-		job.Errorf("%s\n", warning)
-	}
-
-	return engine.StatusOK
+	return container.ID, warnings, nil
 }
 
 // Create creates a new container from the given configuration with a given name.
@@ -92,6 +70,9 @@ func (daemon *Daemon) Create(config *runconfig.Config, hostConfig *runconfig.Hos
 
 	if warnings, err = daemon.mergeAndVerifyConfig(config, img); err != nil {
 		return nil, nil, err
+	}
+	if !config.NetworkDisabled && daemon.SystemConfig().IPv4ForwardingDisabled {
+		warnings = append(warnings, "IPv4 forwarding is disabled.\n")
 	}
 	if hostConfig == nil {
 		hostConfig = &runconfig.HostConfig{}

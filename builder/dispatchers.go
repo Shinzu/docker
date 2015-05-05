@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	log "github.com/Sirupsen/logrus"
+	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/nat"
 	flag "github.com/docker/docker/pkg/mflag"
 	"github.com/docker/docker/runconfig"
@@ -46,6 +46,22 @@ func env(b *Builder, args []string, attributes map[string]bool, original string)
 		// should never get here, but just in case
 		return fmt.Errorf("Bad input to ENV, too many args")
 	}
+
+	// TODO/FIXME/NOT USED
+	// Just here to show how to use the builder flags stuff within the
+	// context of a builder command. Will remove once we actually add
+	// a builder command to something!
+	/*
+		flBool1 := b.BuilderFlags.AddBool("bool1", false)
+		flStr1 := b.BuilderFlags.AddString("str1", "HI")
+
+		if err := b.BuilderFlags.Parse(); err != nil {
+			return err
+		}
+
+		fmt.Printf("Bool1:%v\n", flBool1)
+		fmt.Printf("Str1:%v\n", flStr1)
+	*/
 
 	commitStr := "ENV"
 
@@ -166,12 +182,12 @@ func from(b *Builder, args []string, attributes map[string]bool, original string
 		}
 	}
 	if err != nil {
-		if b.Daemon.Graph().IsNotExist(err) {
+		if b.Daemon.Graph().IsNotExist(err, name) {
 			image, err = b.pullImage(name)
 		}
 
 		// note that the top level err will still be !nil here if IsNotExist is
-		// not the error. This approach just simplifies hte logic a bit.
+		// not the error. This approach just simplifies the logic a bit.
 		if err != nil {
 			return err
 		}
@@ -262,9 +278,9 @@ func run(b *Builder, args []string, attributes map[string]bool, original string)
 	b.Config.Cmd = config.Cmd
 	runconfig.Merge(b.Config, config)
 
-	defer func(cmd []string) { b.Config.Cmd = cmd }(cmd)
+	defer func(cmd *runconfig.Command) { b.Config.Cmd = cmd }(cmd)
 
-	log.Debugf("[BUILDER] Command to be executed: %v", b.Config.Cmd)
+	logrus.Debugf("[BUILDER] Command to be executed: %v", b.Config.Cmd)
 
 	hit, err := b.probeCache()
 	if err != nil {
@@ -301,13 +317,15 @@ func run(b *Builder, args []string, attributes map[string]bool, original string)
 // Argument handling is the same as RUN.
 //
 func cmd(b *Builder, args []string, attributes map[string]bool, original string) error {
-	b.Config.Cmd = handleJsonArgs(args, attributes)
+	cmdSlice := handleJsonArgs(args, attributes)
 
 	if !attributes["json"] {
-		b.Config.Cmd = append([]string{"/bin/sh", "-c"}, b.Config.Cmd...)
+		cmdSlice = append([]string{"/bin/sh", "-c"}, cmdSlice...)
 	}
 
-	if err := b.commit("", b.Config.Cmd, fmt.Sprintf("CMD %q", b.Config.Cmd)); err != nil {
+	b.Config.Cmd = runconfig.NewCommand(cmdSlice...)
+
+	if err := b.commit("", b.Config.Cmd, fmt.Sprintf("CMD %q", cmdSlice)); err != nil {
 		return err
 	}
 
@@ -332,13 +350,13 @@ func entrypoint(b *Builder, args []string, attributes map[string]bool, original 
 	switch {
 	case attributes["json"]:
 		// ENTRYPOINT ["echo", "hi"]
-		b.Config.Entrypoint = parsed
+		b.Config.Entrypoint = runconfig.NewEntrypoint(parsed...)
 	case len(parsed) == 0:
 		// ENTRYPOINT []
 		b.Config.Entrypoint = nil
 	default:
 		// ENTRYPOINT echo hi
-		b.Config.Entrypoint = []string{"/bin/sh", "-c", parsed[0]}
+		b.Config.Entrypoint = runconfig.NewEntrypoint("/bin/sh", "-c", parsed[0])
 	}
 
 	// when setting the entrypoint if a CMD was not explicitly set then
@@ -427,6 +445,10 @@ func volume(b *Builder, args []string, attributes map[string]bool, original stri
 		b.Config.Volumes = map[string]struct{}{}
 	}
 	for _, v := range args {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return fmt.Errorf("Volume specified can not be an empty string")
+		}
 		b.Config.Volumes[v] = struct{}{}
 	}
 	if err := b.commit("", b.Config.Cmd, fmt.Sprintf("VOLUME %v", args)); err != nil {
