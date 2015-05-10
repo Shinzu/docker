@@ -149,6 +149,7 @@ expect an integer, and they can only be specified once.
       --default-gateway-v6=""                Container default gateway IPv6 address
       --dns=[]                               DNS server to use
       --dns-search=[]                        DNS search domains to use
+      --default-ulimit=[]                    Set default ulimit settings for containers
       -e, --exec-driver="native"             Exec driver to use
       --fixed-cidr=""                        IPv4 subnet for fixed IPs
       --fixed-cidr-v6=""                     IPv6 subnet for fixed IPs
@@ -177,8 +178,8 @@ expect an integer, and they can only be specified once.
       --tlscert="~/.docker/cert.pem"         Path to TLS certificate file
       --tlskey="~/.docker/key.pem"           Path to TLS key file
       --tlsverify=false                      Use TLS and verify the remote
+      --userland-proxy=true                  Use userland proxy for loopback traffic
       -v, --version=false                    Print version information and quit
-      --default-ulimit=[]                    Set default ulimit settings for containers.
 
 Options with [] may be specified multiple times.
 
@@ -642,8 +643,9 @@ is returned by the `docker attach` command to its caller too:
       -m, --memory=""          Memory limit for all build containers
       --memory-swap=""         Total memory (memory + swap), `-1` to disable swap
       -c, --cpu-shares         CPU Shares (relative weight)
-      --cpuset-cpus=""         CPUs in which to allow execution, e.g. `0-3`, `0,1`
       --cpuset-mems=""         MEMs in which to allow execution, e.g. `0-3`, `0,1`
+      --cpuset-cpus=""         CPUs in which to allow exection, e.g. `0-3`, `0,1`
+      --cgroup-parent=""       Optional parent cgroup for the container
 
 Builds Docker images from a Dockerfile and a "context". A build's context is
 the files located in the specified `PATH` or `URL`.  The build process can
@@ -862,6 +864,11 @@ you refer to it on the command line.
 > children) for security reasons, and to ensure repeatable builds on remote
 > Docker hosts. This is also the reason why `ADD ../file` will not work.
 
+When `docker build` is run with the `--cgroup-parent` option the containers used
+in the build will be run with the [corresponding `docker run`
+flag](/reference/run/#specifying-custom-cgroups). 
+
+
 ## commit
 
     Usage: docker commit [OPTIONS] CONTAINER [REPOSITORY[:TAG]]
@@ -935,6 +942,7 @@ Creates a new container.
 
       -a, --attach=[]            Attach to STDIN, STDOUT or STDERR
       --add-host=[]              Add a custom host-to-IP mapping (host:ip)
+      --blkio-weight=0           Block IO weight (relative weight)
       -c, --cpu-shares=0         CPU shares (relative weight)
       --cap-add=[]               Add Linux capabilities
       --cap-drop=[]              Drop Linux capabilities
@@ -942,6 +950,7 @@ Creates a new container.
       --cidfile=""               Write the container ID to the file
       --cpuset-cpus=""           CPUs in which to allow execution (0-3, 0,1)
       --cpuset-mems=""           Memory nodes (MEMs) in which to allow execution (0-3, 0,1)
+      --cpu-period=0             Limit the CPU CFS (Completely Fair Scheduler) period
       --cpu-quota=0              Limit the CPU CFS (Completely Fair Scheduler) quota
       --device=[]                Add a host device to the container
       --dns=[]                   Set custom DNS servers
@@ -1892,12 +1901,14 @@ To remove an image using its digest:
 
       -a, --attach=[]            Attach to STDIN, STDOUT or STDERR
       --add-host=[]              Add a custom host-to-IP mapping (host:ip)
+      --blkio-weight=0           Block IO weight (relative weight)
       -c, --cpu-shares=0         CPU shares (relative weight)
       --cap-add=[]               Add Linux capabilities
       --cap-drop=[]              Drop Linux capabilities
       --cidfile=""               Write the container ID to the file
       --cpuset-cpus=""           CPUs in which to allow execution (0-3, 0,1)
       --cpuset-mems=""           Memory nodes (MEMs) in which to allow execution (0-3, 0,1)
+      --cpu-period=0             Limit the CPU CFS (Completely Fair Scheduler) period
       --cpu-quota=0              Limit the CPU CFS (Completely Fair Scheduler) quota
       -d, --detach=false         Run container in background and print container ID
       --device=[]                Add a host device to the container

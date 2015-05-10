@@ -71,7 +71,6 @@ func init() {
 		command.Expose:     expose,
 		command.Volume:     volume,
 		command.User:       user,
-		command.Insert:     insert,
 	}
 }
 
@@ -122,12 +121,14 @@ type Builder struct {
 	noBaseImage    bool          // indicates that this build does not start from any base image, but is being built from an empty file system.
 
 	// Set resource restrictions for build containers
-	cpuSetCpus string
-	cpuSetMems string
-	cpuShares  int64
-	cpuQuota   int64
-	memory     int64
-	memorySwap int64
+	cpuSetCpus   string
+	cpuSetMems   string
+	cpuShares    int64
+	cpuPeriod    int64
+	cpuQuota     int64
+	cgroupParent string
+	memory       int64
+	memorySwap   int64
 
 	cancelled <-chan struct{} // When closed, job was cancelled.
 }
@@ -279,7 +280,11 @@ func (b *Builder) dispatch(stepN int, ast *parser.Node) error {
 	original := ast.Original
 	flags := ast.Flags
 	strs := []string{}
-	msg := fmt.Sprintf("Step %d : %s", stepN, original)
+	msg := fmt.Sprintf("Step %d : %s", stepN, strings.ToUpper(cmd))
+
+	if len(ast.Flags) > 0 {
+		msg += " " + strings.Join(ast.Flags, " ")
+	}
 
 	if cmd == "onbuild" {
 		if ast.Next == nil {
@@ -288,6 +293,11 @@ func (b *Builder) dispatch(stepN int, ast *parser.Node) error {
 		ast = ast.Next.Children[0]
 		strs = append(strs, ast.Value)
 		msg += " " + ast.Value
+
+		if len(ast.Flags) > 0 {
+			msg += " " + strings.Join(ast.Flags, " ")
+		}
+
 	}
 
 	// count the number of nodes that we are going to traverse first
