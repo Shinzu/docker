@@ -157,6 +157,7 @@ called a digest. As long as the input used to generate the image is unchanged,
 the digest value is predictable and referenceable.
 
 ## PID settings (--pid)
+
     --pid=""  : Set the PID (Process) Namespace mode for the container,
            'host': use the host's PID namespace inside the container
 
@@ -176,6 +177,23 @@ within the container.
 
 This command would allow you to use `strace` inside the container on pid 1234 on
 the host.
+
+## UTS settings (--uts)
+
+    --uts=""  : Set the UTS namespace mode for the container,
+           'host': use the host's UTS namespace inside the container
+
+The UTS namespace is for setting the hostname and the domain that is visible
+to running processes in that namespace.  By default, all containers, including
+those with `--net=host`, have their own UTS namespace.  The `host` setting will
+result in the container using the same UTS namespace as the host.
+
+You may wish to share the UTS namespace with the host if you would like the
+hostname of the container to change as the hostname of the host changes.  A
+more advanced use case would be changing the host's hostname from a container.
+
+> **Note**: `--uts="host"` gives the container full access to change the
+> hostname of the host and is therefore considered insecure.
 
 ## IPC settings (--ipc)
 
@@ -216,9 +234,9 @@ networking. In cases like this, you would perform I/O through files or
 Your container will use the same DNS servers as the host by default, but
 you can override this with `--dns`.
 
-By default a random MAC is generated. You can set the container's MAC address
-explicitly by providing a MAC via the `--mac-address` parameter (format:
-`12:34:56:78:9a:bc`).
+By default, the MAC address is generated using the IP address allocated to the
+container. You can set the container's MAC address explicitly by providing a
+MAC address via the `--mac-address` parameter (format:`12:34:56:78:9a:bc`).
 
 Supported networking modes are:
 
@@ -942,7 +960,7 @@ or override the Dockerfile's exposed defaults:
                    Both hostPort and containerPort can be specified as a range of ports. 
                    When specifying ranges for both, the number of container ports in the range must match the number of host ports in the range. (e.g., `-p 1234-1236:1234-1236/tcp`)
                    (use 'docker port' to see the actual mapping)
-    --link=""  : Add link to another container (<name or id>:alias)
+    --link=""  : Add link to another container (<name or id>:alias or <name or id>)
 
 As mentioned previously, `EXPOSE` (and `--expose`) makes ports available
 **in** a container for incoming connections. The port number on the

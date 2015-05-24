@@ -458,10 +458,8 @@ func (b *Builder) pullImage(name string) (*imagepkg.Image, error) {
 	}
 
 	imagePullConfig := &graph.ImagePullConfig{
-		Parallel:   true,
 		AuthConfig: pullRegistryAuth,
 		OutStream:  ioutils.NopWriteCloser(b.OutOld),
-		Json:       b.StreamFormatter.Json(),
 	}
 
 	if err := b.Daemon.Repositories().Pull(remote, tag, imagePullConfig); err != nil {
@@ -563,6 +561,7 @@ func (b *Builder) create() (*daemon.Container, error) {
 		CgroupParent: b.cgroupParent,
 		Memory:       b.memory,
 		MemorySwap:   b.memorySwap,
+		NetworkMode:  "bridge",
 	}
 
 	config := *b.Config
@@ -623,7 +622,7 @@ func (b *Builder) run(c *daemon.Container) error {
 	// Wait for it to finish
 	if ret, _ := c.WaitStop(-1 * time.Second); ret != 0 {
 		return &jsonmessage.JSONError{
-			Message: fmt.Sprintf("The command %q returned a non-zero code: %d", b.Config.Cmd.ToString(), ret),
+			Message: fmt.Sprintf("The command '%s' returned a non-zero code: %d", b.Config.Cmd.ToString(), ret),
 			Code:    ret,
 		}
 	}
@@ -774,7 +773,7 @@ func (b *Builder) clearTmp() {
 			fmt.Fprintf(b.OutStream, "Error removing intermediate container %s: %v\n", stringid.TruncateID(c), err)
 			return
 		}
-		b.Daemon.DeleteVolumes(tmp.VolumePaths())
+		b.Daemon.DeleteVolumes(tmp)
 		delete(b.TmpContainers, c)
 		fmt.Fprintf(b.OutStream, "Removing intermediate container %s\n", stringid.TruncateID(c))
 	}

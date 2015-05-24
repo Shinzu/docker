@@ -29,10 +29,15 @@ pages:
 - ['introduction/index.md', '**HIDDEN**']
 - ['introduction/understanding-docker.md', 'About', 'Understanding Docker']
 
+# Experimental
+- ['experimental/experimental.md', 'About', 'Experimental Features']
+
+
 # Installation:
 - ['installation/index.md', '**HIDDEN**']
 - ['installation/ubuntulinux.md', 'Installation', 'Ubuntu']
 - ['installation/mac.md', 'Installation', 'Mac OS X']
+- ['kitematic/index.md', 'Installation', 'Kitematic on OS X']
 - ['installation/windows.md', 'Installation', 'Microsoft Windows']
 - ['installation/testing-windows-docker-client.md', 'Installation', 'Building and testing the Windows Docker client']
 - ['installation/amazon.md', 'Installation', 'Amazon EC2']
@@ -71,6 +76,7 @@ pages:
 - ['compose/extends.md', 'User Guide', '&nbsp;&nbsp;&nbsp;&nbsp;&blacksquare;&nbsp; Extend Compose services' ]
 - ['machine/index.md', 'User Guide', 'Docker Machine' ]
 - ['swarm/index.md', 'User Guide', 'Docker Swarm' ]
+- ['kitematic/userguide.md', 'User Guide', 'Kitematic']
 
 # Docker Hub docs:
 - ['docker-hub/index.md', 'Docker Hub', 'Docker Hub' ]
@@ -88,6 +94,7 @@ pages:
 - ['docker-hub-enterprise/install.md', 'Docker Hub Enterprise', '&nbsp;&nbsp;Installation' ]
 - ['docker-hub-enterprise/configuration.md', 'Docker Hub Enterprise', '&nbsp;&nbsp;Configuration options' ]
 - ['docker-hub-enterprise/support.md', 'Docker Hub Enterprise', 'Support' ]
+- ['docker-hub-enterprise/release-notes.md', 'Docker Hub Enterprise', 'Release notes' ]
 
 # Examples:
 - ['examples/index.md', '**HIDDEN**']
@@ -102,6 +109,9 @@ pages:
 - ['compose/django.md', 'Examples', 'Getting started with Compose and Django']
 - ['compose/rails.md', 'Examples', 'Getting started with Compose and Rails']
 - ['compose/wordpress.md', 'Examples', 'Getting started with Compose and Wordpress']
+- ['kitematic/minecraft-server.md', 'Examples', 'Kitematic: Minecraft server']
+- ['kitematic/nginx-web-server.md', 'Examples', 'Kitematic: Ngnix web server']
+- ['kitematic/rethinkdb-dev-database.md', 'Examples', 'Kitematic: RethinkDB development database']
 
 # Articles
 - ['articles/index.md', '**HIDDEN**']
@@ -157,6 +167,7 @@ pages:
 - ['reference/api/docker-io_api.md', 'Reference', 'Docker Hub API']
 #- ['reference/image-spec-v1.md', 'Reference', 'Docker Image Specification v1.0.0']
 - ['reference/api/docker_remote_api.md', 'Reference', 'Docker Remote API']
+- ['reference/api/docker_remote_api_v1.19.md', 'Reference', 'Docker Remote API v1.19']
 - ['reference/api/docker_remote_api_v1.18.md', 'Reference', 'Docker Remote API v1.18']
 - ['reference/api/docker_remote_api_v1.17.md', 'Reference', 'Docker Remote API v1.17']
 - ['reference/api/docker_remote_api_v1.16.md', 'Reference', 'Docker Remote API v1.16']
@@ -178,6 +189,8 @@ pages:
 - ['reference/api/docker_remote_api_v1.0.md', '**HIDDEN**']
 - ['reference/api/remote_api_client_libraries.md', 'Reference', 'Docker Remote API client libraries']
 - ['reference/api/docker_io_accounts_api.md', 'Reference', 'Docker Hub accounts API']
+- ['kitematic/faq.md', 'Reference', 'Kitematic: FAQ']
+- ['kitematic/known-issues.md', 'Reference', 'Kitematic: Known issues']
 
 # Hidden registry files
 - ['registry/storage-drivers/azure.md', '**HIDDEN**' ]

@@ -1,10 +1,10 @@
 package daemon
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"github.com/docker/libcontainer/label"
+	"github.com/docker/libnetwork"
+	"github.com/docker/libnetwork/netlabel"
+	"github.com/docker/libnetwork/options"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api"
@@ -24,8 +27,8 @@ import (
 	"github.com/docker/docker/daemon/execdriver/execdrivers"
 	"github.com/docker/docker/daemon/graphdriver"
 	_ "github.com/docker/docker/daemon/graphdriver/vfs"
+	"github.com/docker/docker/daemon/logger"
 	"github.com/docker/docker/daemon/network"
-	"github.com/docker/docker/daemon/networkdriver/bridge"
 	"github.com/docker/docker/graph"
 	"github.com/docker/docker/image"
 	"github.com/docker/docker/pkg/archive"
@@ -36,7 +39,6 @@ import (
 	"github.com/docker/docker/pkg/namesgenerator"
 	"github.com/docker/docker/pkg/parsers"
 	"github.com/docker/docker/pkg/parsers/kernel"
-	"github.com/docker/docker/pkg/resolvconf"
 	"github.com/docker/docker/pkg/stringid"
 	"github.com/docker/docker/pkg/sysinfo"
 	"github.com/docker/docker/pkg/truncindex"
@@ -44,10 +46,11 @@ import (
 	"github.com/docker/docker/runconfig"
 	"github.com/docker/docker/trust"
 	"github.com/docker/docker/utils"
-	"github.com/docker/docker/volumes"
-
-	"github.com/go-fsnotify/fsnotify"
+	volumedrivers "github.com/docker/docker/volume/drivers"
+	"github.com/docker/docker/volume/local"
 )
+
+const defaultVolumesPathName = "volumes"
 
 var (
 	validContainerNameChars   = `[a-zA-Z0-9][a-zA-Z0-9_.-]`
@@ -99,7 +102,6 @@ type Daemon struct {
 	repositories     *graph.TagStore
 	idIndex          *truncindex.TruncIndex
 	sysInfo          *sysinfo.SysInfo
-	volumes          *volumes.Repository
 	config           *Config
 	containerGraph   *graphdb.Database
 	driver           graphdriver.Driver
@@ -108,6 +110,8 @@ type Daemon struct {
 	defaultLogConfig runconfig.LogConfig
 	RegistryService  *registry.Service
 	EventsService    *events.Events
+	netController    libnetwork.NetworkController
+	root             string
 }
 
 // Get looks for a container using the provided information, which could be
@@ -154,10 +158,13 @@ func (daemon *Daemon) containerRoot(id string) string {
 // This is typically done at startup.
 func (daemon *Daemon) load(id string) (*Container, error) {
 	container := &Container{
-		root:         daemon.containerRoot(id),
-		State:        NewState(),
-		execCommands: newExecStore(),
+		CommonContainer: CommonContainer{
+			State:        NewState(),
+			root:         daemon.containerRoot(id),
+			execCommands: newExecStore(),
+		},
 	}
+
 	if err := container.FromDisk(); err != nil {
 		return nil, err
 	}
@@ -205,7 +212,13 @@ func (daemon *Daemon) register(container *Container, updateSuffixarray bool) err
 	// we'll waste time if we update it for every container
 	daemon.idIndex.Add(container.ID)
 
-	container.registerVolumes()
+	if err := daemon.verifyOldVolumesInfo(container); err != nil {
+		return err
+	}
+
+	if err := container.prepareMountPoints(); err != nil {
+		return err
+	}
 
 	if container.IsRunning() {
 		logrus.Debugf("killing old running container %s", container.ID)
@@ -245,10 +258,15 @@ func (daemon *Daemon) ensureName(container *Container) error {
 }
 
 func (daemon *Daemon) restore() error {
+	type cr struct {
+		container  *Container
+		registered bool
+	}
+
 	var (
 		debug         = (os.Getenv("DEBUG") != "" || os.Getenv("TEST") != "")
-		containers    = make(map[string]*Container)
 		currentDriver = daemon.driver.String()
+		containers    = make(map[string]*cr)
 	)
 
 	if !debug {
@@ -274,13 +292,11 @@ func (daemon *Daemon) restore() error {
 		if (container.Driver == "" && currentDriver == "aufs") || container.Driver == currentDriver {
 			logrus.Debugf("Loaded container %v", container.ID)
 
-			containers[container.ID] = container
+			containers[container.ID] = &cr{container: container}
 		} else {
 			logrus.Debugf("Cannot load container %s because it was created with another graph driver.", container.ID)
 		}
 	}
-
-	registeredContainers := []*Container{}
 
 	if entities := daemon.containerGraph.List("/", -1); entities != nil {
 		for _, p := range entities.Paths() {
@@ -290,50 +306,43 @@ func (daemon *Daemon) restore() error {
 
 			e := entities[p]
 
-			if container, ok := containers[e.ID()]; ok {
-				if err := daemon.register(container, false); err != nil {
-					logrus.Debugf("Failed to register container %s: %s", container.ID, err)
-				}
-
-				registeredContainers = append(registeredContainers, container)
-
-				// delete from the map so that a new name is not automatically generated
-				delete(containers, e.ID())
+			if c, ok := containers[e.ID()]; ok {
+				c.registered = true
 			}
 		}
 	}
 
-	// Any containers that are left over do not exist in the graph
-	for _, container := range containers {
-		// Try to set the default name for a container if it exists prior to links
-		container.Name, err = daemon.generateNewName(container.ID)
-		if err != nil {
-			logrus.Debugf("Setting default id - %s", err)
-		}
+	group := sync.WaitGroup{}
+	for _, c := range containers {
+		group.Add(1)
 
-		if err := daemon.register(container, false); err != nil {
-			logrus.Debugf("Failed to register container %s: %s", container.ID, err)
-		}
+		go func(container *Container, registered bool) {
+			defer group.Done()
 
-		registeredContainers = append(registeredContainers, container)
-	}
+			if !registered {
+				// Try to set the default name for a container if it exists prior to links
+				container.Name, err = daemon.generateNewName(container.ID)
+				if err != nil {
+					logrus.Debugf("Setting default id - %s", err)
+				}
+			}
 
-	// check the restart policy on the containers and restart any container with
-	// the restart policy of "always"
-	if daemon.config.AutoRestart {
-		logrus.Debug("Restarting containers...")
+			if err := daemon.register(container, false); err != nil {
+				logrus.Debugf("Failed to register container %s: %s", container.ID, err)
+			}
 
-		for _, container := range registeredContainers {
-			if container.hostConfig.RestartPolicy.Name == "always" ||
-				(container.hostConfig.RestartPolicy.Name == "on-failure" && container.ExitCode != 0) {
+			// check the restart policy on the containers and restart any container with
+			// the restart policy of "always"
+			if daemon.config.AutoRestart && container.shouldRestart() {
 				logrus.Debugf("Starting container %s", container.ID)
 
 				if err := container.Start(); err != nil {
 					logrus.Debugf("Failed to start container %s: %s", container.ID, err)
 				}
 			}
-		}
+		}(c.container, c.registered)
 	}
+	group.Wait()
 
 	if !debug {
 		if logrus.GetLevel() == logrus.InfoLevel {
@@ -342,61 +351,6 @@ func (daemon *Daemon) restore() error {
 		logrus.Info("Loading containers: done.")
 	}
 
-	return nil
-}
-
-// set up the watch on the host's /etc/resolv.conf so that we can update container's
-// live resolv.conf when the network changes on the host
-func (daemon *Daemon) setupResolvconfWatcher() error {
-
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-
-	//this goroutine listens for the events on the watch we add
-	//on the resolv.conf file on the host
-	go func() {
-		for {
-			select {
-			case event := <-watcher.Events:
-				if event.Name == "/etc/resolv.conf" &&
-					(event.Op&(fsnotify.Write|fsnotify.Create) != 0) {
-					// verify a real change happened before we go further--a file write may have happened
-					// without an actual change to the file
-					updatedResolvConf, newResolvConfHash, err := resolvconf.GetIfChanged()
-					if err != nil {
-						logrus.Debugf("Error retrieving updated host resolv.conf: %v", err)
-					} else if updatedResolvConf != nil {
-						// because the new host resolv.conf might have localhost nameservers..
-						updatedResolvConf, modified := resolvconf.FilterResolvDns(updatedResolvConf, daemon.config.Bridge.EnableIPv6)
-						if modified {
-							// changes have occurred during localhost cleanup: generate an updated hash
-							newHash, err := ioutils.HashData(bytes.NewReader(updatedResolvConf))
-							if err != nil {
-								logrus.Debugf("Error generating hash of new resolv.conf: %v", err)
-							} else {
-								newResolvConfHash = newHash
-							}
-						}
-						logrus.Debug("host network resolv.conf changed--walking container list for updates")
-						contList := daemon.containers.List()
-						for _, container := range contList {
-							if err := container.updateResolvConf(updatedResolvConf, newResolvConfHash); err != nil {
-								logrus.Debugf("Error on resolv.conf update check for container ID: %s: %v", container.ID, err)
-							}
-						}
-					}
-				}
-			case err := <-watcher.Errors:
-				logrus.Debugf("host resolv.conf notify error: %v", err)
-			}
-		}
-	}()
-
-	if err := watcher.Add("/etc"); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -572,22 +526,25 @@ func (daemon *Daemon) newContainer(name string, config *runconfig.Config, imgID 
 	entrypoint, args := daemon.getEntrypointAndArgs(config.Entrypoint, config.Cmd)
 
 	container := &Container{
-		// FIXME: we should generate the ID here instead of receiving it as an argument
-		ID:              id,
-		Created:         time.Now().UTC(),
-		Path:            entrypoint,
-		Args:            args, //FIXME: de-duplicate from config
-		Config:          config,
-		hostConfig:      &runconfig.HostConfig{},
-		ImageID:         imgID,
-		NetworkSettings: &network.Settings{},
-		Name:            name,
-		Driver:          daemon.driver.String(),
-		ExecDriver:      daemon.execDriver.Name(),
-		State:           NewState(),
-		execCommands:    newExecStore(),
+		CommonContainer: CommonContainer{
+			ID:              id, // FIXME: we should generate the ID here instead of receiving it as an argument
+			Created:         time.Now().UTC(),
+			Path:            entrypoint,
+			Args:            args, //FIXME: de-duplicate from config
+			Config:          config,
+			hostConfig:      &runconfig.HostConfig{},
+			ImageID:         imgID,
+			NetworkSettings: &network.Settings{},
+			Name:            name,
+			Driver:          daemon.driver.String(),
+			ExecDriver:      daemon.execDriver.Name(),
+			State:           NewState(),
+			execCommands:    newExecStore(),
+			MountPoints:     map[string]*mountPoint{},
+		},
 	}
 	container.root = daemon.containerRoot(container.ID)
+
 	return container, err
 }
 
@@ -686,14 +643,14 @@ func (daemon *Daemon) RegisterLink(parent, child *Container, alias string) error
 func (daemon *Daemon) RegisterLinks(container *Container, hostConfig *runconfig.HostConfig) error {
 	if hostConfig != nil && hostConfig.Links != nil {
 		for _, l := range hostConfig.Links {
-			parts, err := parsers.PartParser("name:alias", l)
+			name, alias, err := parsers.ParseLink(l)
 			if err != nil {
 				return err
 			}
-			child, err := daemon.Get(parts["name"])
+			child, err := daemon.Get(name)
 			if err != nil {
 				//An error from daemon.Get() means this name could not be found
-				return fmt.Errorf("Could not get container for %s", parts["name"])
+				return fmt.Errorf("Could not get container for %s", name)
 			}
 			for child.hostConfig.NetworkMode.IsContainer() {
 				parts := strings.SplitN(string(child.hostConfig.NetworkMode), ":", 2)
@@ -705,7 +662,7 @@ func (daemon *Daemon) RegisterLinks(container *Container, hostConfig *runconfig.
 			if child.hostConfig.NetworkMode.IsHost() {
 				return runconfig.ErrConflictHostNetworkAndLinks
 			}
-			if err := daemon.RegisterLink(container, child, parts["alias"]); err != nil {
+			if err := daemon.RegisterLink(container, child, alias); err != nil {
 				return err
 			}
 		}
@@ -721,18 +678,15 @@ func (daemon *Daemon) RegisterLinks(container *Container, hostConfig *runconfig.
 }
 
 func NewDaemon(config *Config, registryService *registry.Service) (daemon *Daemon, err error) {
-	if config.Mtu == 0 {
-		config.Mtu = getDefaultNetworkMtu()
-	}
 	// Check for mutually incompatible config options
 	if config.Bridge.Iface != "" && config.Bridge.IP != "" {
 		return nil, fmt.Errorf("You specified -b & --bip, mutually exclusive options. Please specify only one.")
 	}
-	if !config.Bridge.EnableIptables && !config.Bridge.InterContainerCommunication {
+	if !config.Bridge.EnableIPTables && !config.Bridge.InterContainerCommunication {
 		return nil, fmt.Errorf("You specified --iptables=false with --icc=false. ICC uses iptables to function. Please set --icc or --iptables to true.")
 	}
-	if !config.Bridge.EnableIptables && config.Bridge.EnableIpMasq {
-		config.Bridge.EnableIpMasq = false
+	if !config.Bridge.EnableIPTables && config.Bridge.EnableIPMasq {
+		config.Bridge.EnableIPMasq = false
 	}
 	config.DisableNetwork = config.Bridge.Iface == disableNetworkBridge
 
@@ -746,6 +700,9 @@ func NewDaemon(config *Config, registryService *registry.Service) (daemon *Daemo
 	if err := checkKernel(); err != nil {
 		return nil, err
 	}
+
+	// set up SIGUSR1 handler to dump Go routine stacks
+	setupSigusr1Trap()
 
 	// set up the tmpDir to use a canonical path
 	tmp, err := tempDir(config.Root)
@@ -795,6 +752,14 @@ func NewDaemon(config *Config, registryService *registry.Service) (daemon *Daemo
 		}
 	}()
 
+	// Verify logging driver type
+	if config.LogConfig.Type != "none" {
+		if _, err := logger.GetLogDriver(config.LogConfig.Type); err != nil {
+			return nil, fmt.Errorf("error finding the logging driver: %v", err)
+		}
+	}
+	logrus.Debugf("Using default logging driver %s", config.LogConfig.Type)
+
 	if config.EnableSelinuxSupport {
 		if selinuxEnabled() {
 			// As Docker on btrfs and SELinux are incompatible at present, error on both being enabled
@@ -826,15 +791,11 @@ func NewDaemon(config *Config, registryService *registry.Service) (daemon *Daemo
 		return nil, err
 	}
 
-	volumesDriver, err := graphdriver.GetDriver("vfs", config.Root, config.GraphOptions)
+	volumesDriver, err := local.New(filepath.Join(config.Root, defaultVolumesPathName))
 	if err != nil {
 		return nil, err
 	}
-
-	volumes, err := volumes.NewRepository(filepath.Join(config.Root, "volumes"), volumesDriver)
-	if err != nil {
-		return nil, err
-	}
+	volumedrivers.Register(volumesDriver, volumesDriver.Name())
 
 	trustKey, err := api.LoadOrCreateTrustKey(config.TrustKeyPath)
 	if err != nil {
@@ -865,8 +826,9 @@ func NewDaemon(config *Config, registryService *registry.Service) (daemon *Daemo
 	}
 
 	if !config.DisableNetwork {
-		if err := bridge.InitDriver(&config.Bridge); err != nil {
-			return nil, fmt.Errorf("Error initializing Bridge: %v", err)
+		d.netController, err = initNetworkController(config)
+		if err != nil {
+			return nil, fmt.Errorf("Error initializing network controller: %v", err)
 		}
 	}
 
@@ -899,8 +861,7 @@ func NewDaemon(config *Config, registryService *registry.Service) (daemon *Daemo
 	}
 
 	sysInfo := sysinfo.New(false)
-	const runDir = "/var/run/docker"
-	ed, err := execdrivers.NewDriver(config.ExecDriver, config.ExecOptions, runDir, config.Root, sysInitPath, sysInfo)
+	ed, err := execdrivers.NewDriver(config.ExecDriver, config.ExecOptions, config.ExecRoot, config.Root, sysInitPath, sysInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -913,7 +874,6 @@ func NewDaemon(config *Config, registryService *registry.Service) (daemon *Daemo
 	d.repositories = repositories
 	d.idIndex = truncindex.NewTruncIndex([]string{})
 	d.sysInfo = sysInfo
-	d.volumes = volumes
 	d.config = config
 	d.sysInitPath = sysInitPath
 	d.execDriver = ed
@@ -921,17 +881,103 @@ func NewDaemon(config *Config, registryService *registry.Service) (daemon *Daemo
 	d.defaultLogConfig = config.LogConfig
 	d.RegistryService = registryService
 	d.EventsService = eventsService
+	d.root = config.Root
 
 	if err := d.restore(); err != nil {
 		return nil, err
 	}
 
-	// set up filesystem watch on resolv.conf for network changes
-	if err := d.setupResolvconfWatcher(); err != nil {
-		return nil, err
+	return d, nil
+}
+
+func initNetworkController(config *Config) (libnetwork.NetworkController, error) {
+	controller, err := libnetwork.New()
+	if err != nil {
+		return nil, fmt.Errorf("error obtaining controller instance: %v", err)
 	}
 
-	return d, nil
+	// Initialize default driver "null"
+
+	if err := controller.ConfigureNetworkDriver("null", options.Generic{}); err != nil {
+		return nil, fmt.Errorf("Error initializing null driver: %v", err)
+	}
+
+	// Initialize default network on "null"
+	if _, err := controller.NewNetwork("null", "none"); err != nil {
+		return nil, fmt.Errorf("Error creating default \"null\" network: %v", err)
+	}
+
+	// Initialize default driver "host"
+	if err := controller.ConfigureNetworkDriver("host", options.Generic{}); err != nil {
+		return nil, fmt.Errorf("Error initializing host driver: %v", err)
+	}
+
+	// Initialize default network on "host"
+	if _, err := controller.NewNetwork("host", "host"); err != nil {
+		return nil, fmt.Errorf("Error creating default \"host\" network: %v", err)
+	}
+
+	// Initialize default driver "bridge"
+	option := options.Generic{
+		"EnableIPForwarding": config.Bridge.EnableIPForward}
+
+	if err := controller.ConfigureNetworkDriver("bridge", options.Generic{netlabel.GenericData: option}); err != nil {
+		return nil, fmt.Errorf("Error initializing bridge driver: %v", err)
+	}
+
+	netOption := options.Generic{
+		"BridgeName":          config.Bridge.Iface,
+		"Mtu":                 config.Mtu,
+		"EnableIPTables":      config.Bridge.EnableIPTables,
+		"EnableIPMasquerade":  config.Bridge.EnableIPMasq,
+		"EnableICC":           config.Bridge.InterContainerCommunication,
+		"EnableUserlandProxy": config.Bridge.EnableUserlandProxy,
+	}
+
+	if config.Bridge.IP != "" {
+		ip, bipNet, err := net.ParseCIDR(config.Bridge.IP)
+		if err != nil {
+			return nil, err
+		}
+
+		bipNet.IP = ip
+		netOption["AddressIPv4"] = bipNet
+	}
+
+	if config.Bridge.FixedCIDR != "" {
+		_, fCIDR, err := net.ParseCIDR(config.Bridge.FixedCIDR)
+		if err != nil {
+			return nil, err
+		}
+
+		netOption["FixedCIDR"] = fCIDR
+	}
+
+	if config.Bridge.FixedCIDRv6 != "" {
+		_, fCIDRv6, err := net.ParseCIDR(config.Bridge.FixedCIDRv6)
+		if err != nil {
+			return nil, err
+		}
+
+		netOption["FixedCIDRv6"] = fCIDRv6
+	}
+
+	// --ip processing
+	if config.Bridge.DefaultIP != nil {
+		netOption["DefaultBindingIP"] = config.Bridge.DefaultIP
+	}
+
+	// Initialize default network on "bridge" with the same name
+	_, err = controller.NewNetwork("bridge", "bridge",
+		libnetwork.NetworkOptionGeneric(options.Generic{
+			netlabel.GenericData: netOption,
+			netlabel.EnableIPv6:  config.Bridge.EnableIPv6,
+		}))
+	if err != nil {
+		return nil, fmt.Errorf("Error creating default \"bridge\" network: %v", err)
+	}
+
+	return controller, nil
 }
 
 func (daemon *Daemon) Shutdown() error {
@@ -1002,22 +1048,6 @@ func (daemon *Daemon) Diff(container *Container) (archive.Archive, error) {
 
 func (daemon *Daemon) Run(c *Container, pipes *execdriver.Pipes, startCallback execdriver.StartCallback) (execdriver.ExitStatus, error) {
 	return daemon.execDriver.Run(c.command, pipes, startCallback)
-}
-
-func (daemon *Daemon) Pause(c *Container) error {
-	if err := daemon.execDriver.Pause(c.command); err != nil {
-		return err
-	}
-	c.SetPaused()
-	return nil
-}
-
-func (daemon *Daemon) Unpause(c *Container) error {
-	if err := daemon.execDriver.Unpause(c.command); err != nil {
-		return err
-	}
-	c.SetUnpaused()
-	return nil
 }
 
 func (daemon *Daemon) Kill(c *Container, sig int) error {
@@ -1181,11 +1211,19 @@ func (daemon *Daemon) verifyHostConfig(hostConfig *runconfig.HostConfig) ([]stri
 	if hostConfig.BlkioWeight > 0 && (hostConfig.BlkioWeight < 10 || hostConfig.BlkioWeight > 1000) {
 		return warnings, fmt.Errorf("Range of blkio weight is from 10 to 1000.")
 	}
+	if hostConfig.OomKillDisable && !daemon.SystemConfig().OomKillDisable {
+		hostConfig.OomKillDisable = false
+		return warnings, fmt.Errorf("Your kernel does not support oom kill disable.")
+	}
 
 	return warnings, nil
 }
 
 func (daemon *Daemon) setHostConfig(container *Container, hostConfig *runconfig.HostConfig) error {
+	if err := daemon.registerMountPoints(container, hostConfig); err != nil {
+		return err
+	}
+
 	container.Lock()
 	defer container.Unlock()
 	if err := parseSecurityOpt(container, hostConfig); err != nil {
@@ -1199,6 +1237,5 @@ func (daemon *Daemon) setHostConfig(container *Container, hostConfig *runconfig.
 
 	container.hostConfig = hostConfig
 	container.toDisk()
-
 	return nil
 }

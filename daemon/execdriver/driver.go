@@ -72,6 +72,7 @@ type Network struct {
 	Interface      *NetworkInterface `json:"interface"` // if interface is nil then networking is disabled
 	Mtu            int               `json:"mtu"`
 	ContainerID    string            `json:"container_id"` // id of the container to join network.
+	NamespacePath  string            `json:"namespace_path"`
 	HostNetworking bool              `json:"host_networking"`
 }
 
@@ -84,6 +85,11 @@ type Ipc struct {
 // PID settings of the container
 type Pid struct {
 	HostPid bool `json:"host_pid"`
+}
+
+// UTS settings of the container
+type UTS struct {
+	HostUTS bool `json:"host_uts"`
 }
 
 type NetworkInterface struct {
@@ -155,6 +161,7 @@ type Command struct {
 	Network            *Network          `json:"network"`
 	Ipc                *Ipc              `json:"ipc"`
 	Pid                *Pid              `json:"pid"`
+	UTS                *UTS              `json:"uts"`
 	Resources          *Resources        `json:"resources"`
 	Mounts             []Mount           `json:"mounts"`
 	AllowedDevices     []*configs.Device `json:"allowed_devices"`
