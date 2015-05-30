@@ -219,6 +219,7 @@ test_env() {
 		GOPATH="$GOPATH" \
 		HOME="$DEST/fake-HOME" \
 		PATH="$PATH" \
+		TEMP="$TEMP" \
 		TEST_DOCKERINIT_PATH="$TEST_DOCKERINIT_PATH" \
 		"$@"
 }
@@ -290,7 +291,9 @@ main() {
 
 	if [ "$(go env GOHOSTOS)" != 'windows' ]; then
 		# Windows and symlinks don't get along well
-		ln -sfT "$VERSION" bundles/latest
+
+		rm -f bundles/latest
+		ln -s "$VERSION" bundles/latest
 	fi
 
 	if [ $# -lt 1 ]; then

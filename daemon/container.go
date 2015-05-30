@@ -347,7 +347,7 @@ func (container *Container) cleanup() {
 		container.daemon.unregisterExecCommand(eConfig)
 	}
 
-	container.UnmountVolumes(true)
+	container.UnmountVolumes(false)
 }
 
 func (container *Container) KillSig(sig int) error {
@@ -437,7 +437,23 @@ func (container *Container) Kill() error {
 
 	// 1. Send SIGKILL
 	if err := container.killPossiblyDeadProcess(9); err != nil {
-		return err
+		// While normally we might "return err" here we're not going to
+		// because if we can't stop the container by this point then
+		// its probably because its already stopped. Meaning, between
+		// the time of the IsRunning() call above and now it stopped.
+		// Also, since the err return will be exec driver specific we can't
+		// look for any particular (common) error that would indicate
+		// that the process is already dead vs something else going wrong.
+		// So, instead we'll give it up to 2 more seconds to complete and if
+		// by that time the container is still running, then the error
+		// we got is probably valid and so we return it to the caller.
+
+		if container.IsRunning() {
+			container.WaitStop(2 * time.Second)
+			if container.IsRunning() {
+				return err
+			}
+		}
 	}
 
 	// 2. Wait for the process to die, in last resort, try to kill the process directly
@@ -1009,6 +1025,7 @@ func copyEscapable(dst io.Writer, src io.ReadCloser) (written int64, err error) 
 func (container *Container) networkMounts() []execdriver.Mount {
 	var mounts []execdriver.Mount
 	if container.ResolvConfPath != "" {
+		label.SetFileLabel(container.ResolvConfPath, container.MountLabel)
 		mounts = append(mounts, execdriver.Mount{
 			Source:      container.ResolvConfPath,
 			Destination: "/etc/resolv.conf",
@@ -1017,6 +1034,7 @@ func (container *Container) networkMounts() []execdriver.Mount {
 		})
 	}
 	if container.HostnamePath != "" {
+		label.SetFileLabel(container.HostnamePath, container.MountLabel)
 		mounts = append(mounts, execdriver.Mount{
 			Source:      container.HostnamePath,
 			Destination: "/etc/hostname",
@@ -1025,6 +1043,7 @@ func (container *Container) networkMounts() []execdriver.Mount {
 		})
 	}
 	if container.HostsPath != "" {
+		label.SetFileLabel(container.HostsPath, container.MountLabel)
 		mounts = append(mounts, execdriver.Mount{
 			Source:      container.HostsPath,
 			Destination: "/etc/hosts",
@@ -1033,6 +1052,15 @@ func (container *Container) networkMounts() []execdriver.Mount {
 		})
 	}
 	return mounts
+}
+
+func (container *Container) addBindMountPoint(name, source, destination string, rw bool) {
+	container.MountPoints[destination] = &mountPoint{
+		Name:        name,
+		Source:      source,
+		Destination: destination,
+		RW:          rw,
+	}
 }
 
 func (container *Container) addLocalMountPoint(name, destination string, rw bool) {
@@ -1085,26 +1113,6 @@ func (container *Container) removeMountPoints() error {
 func (container *Container) shouldRestart() bool {
 	return container.hostConfig.RestartPolicy.Name == "always" ||
 		(container.hostConfig.RestartPolicy.Name == "on-failure" && container.ExitCode != 0)
-}
-
-func (container *Container) UnmountVolumes(forceSyscall bool) error {
-	for _, m := range container.MountPoints {
-		dest, err := container.GetResourcePath(m.Destination)
-		if err != nil {
-			return err
-		}
-
-		if forceSyscall {
-			syscall.Unmount(dest, 0)
-		}
-
-		if m.Volume != nil {
-			if err := m.Volume.Unmount(); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func (container *Container) copyImagePathContent(v volume.Volume, destination string) error {

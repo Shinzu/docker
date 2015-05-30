@@ -34,6 +34,7 @@ docker-run - Run a command in a new container
 [**--link**[=*[]*]]
 [**--lxc-conf**[=*[]*]]
 [**--log-driver**[=*[]*]]
+[**--log-opt**[=*[]*]]
 [**-m**|**--memory**[=*MEMORY*]]
 [**--memory-swap**[=*MEMORY-SWAP*]]
 [**--mac-address**[=*MAC-ADDRESS*]]
@@ -255,6 +256,9 @@ which interface and port to use.
   Logging driver for container. Default is defined by daemon `--log-driver` flag.
   **Warning**: `docker logs` command works only for `json-file` logging driver.
 
+**--log-opt**=[]
+  Logging driver specific options.
+
 **-m**, **--memory**=""
    Memory limit (format: <number><optional unit>, where unit = b, k, m or g)
 
@@ -395,6 +399,21 @@ used in other containers using the **--volumes-from** option.
    The volume may be optionally suffixed with :ro or :rw to mount the volumes in
 read-only or read-write mode, respectively. By default, the volumes are mounted
 read-write. See examples.
+
+Labeling systems like SELinux require proper labels be placed on volume content
+mounted into a container, otherwise the secuirty system might prevent the
+processes running inside the container from using the content. By default,
+volumes are not relabeled.
+
+Two suffixes :z or :Z can be added to the volume mount. These suffixes tell
+Docker to relabel file objects on the shared volumes. The 'z' option tells
+Docker that the volume content will be shared between containers. Docker will
+label the content with a shared content label. Shared volumes labels allow all
+containers to read/write content. The 'Z' option tells Docker to label the
+content with a private unshared label. Private volumes can only be used by the
+current container.
+
+Note: Multiple Volume options can be added separated by a ","
 
 **--volumes-from**=[]
    Mount volumes from the specified container(s)

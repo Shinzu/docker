@@ -66,11 +66,11 @@ func (daemon *Daemon) Create(config *runconfig.Config, hostConfig *runconfig.Hos
 		imgID = img.ID
 	}
 
-	if warnings, err = daemon.mergeAndVerifyConfig(config, img); err != nil {
+	if err := daemon.mergeAndVerifyConfig(config, img); err != nil {
 		return nil, nil, err
 	}
 	if !config.NetworkDisabled && daemon.SystemConfig().IPv4ForwardingDisabled {
-		warnings = append(warnings, "IPv4 forwarding is disabled.\n")
+		warnings = append(warnings, "IPv4 forwarding is disabled.")
 	}
 	if hostConfig == nil {
 		hostConfig = &runconfig.HostConfig{}
@@ -127,6 +127,9 @@ func (daemon *Daemon) Create(config *runconfig.Config, hostConfig *runconfig.Hos
 
 		v, err := createVolume(name, config.VolumeDriver)
 		if err != nil {
+			return nil, nil, err
+		}
+		if err := label.Relabel(v.Path(), container.MountLabel, "z"); err != nil {
 			return nil, nil, err
 		}
 
